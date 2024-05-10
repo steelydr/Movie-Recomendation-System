@@ -1,0 +1,733 @@
+---
+title: "project DPA"
+author: "Priyanka"
+date: "2023-04-22"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r}
+#Install the pacman package
+if(!require(pacman)) install.packages("pacman", repos = "http://cran.us.r-project.org")
+
+#Load the required libraries
+#If a package below is missing, p_load will automatically download it from CRAN
+pacman::p_load(tidyverse, ggplot2, ggthemes, data.table, lubridate, caret, 
+               knitr, scales, treemapify)
+pacman::p_load(stringr)
+pacman::p_load(dplyr)
+```
+Data Preparation
+
+```{r}
+#Download File
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+```
+
+```{r}
+#Construct a data frame called 'ratings' by utilizing the 'fread' function from the data.table library
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\:\\:", 3)
+
+colnames(movies) <- c("movieId", "title", "genres")
+```
+
+```{r}
+movies <- as.data.frame(movies) %>% 
+  mutate(movieId = as.numeric(unique(movieId)),
+         title = as.character(title),
+         genres = as.character(genres))
+movielens <- left_join(ratings, movies, by = "movieId")
+```
+
+```{r}
+#Designate the validation set as 10% of the MovieLens data
+set.seed(1, sample.kind="Rounding")
+test_index <-createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <-movielens[-test_index,]
+temp <-movielens[test_index,]
+#Check if userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+```
+
+```{r}
+#Merge the rows that were removed from the validation set back into the edx set
+removed <-anti_join(temp, validation)
+edx <-rbind(edx, removed)
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+```{r}
+#divide Training and Test Sets:
+set.seed(1, sample.kind = "Rounding")
+test_index <-createDataPartition(y = edx$rating, times = 1, p = 0.1, list = F)
+edx_train <-edx[-test_index,]
+edx_temp <-edx[test_index,]
+#Make sure userId and movieId are in the train and test sets
+edx_test <-edx_temp %>%
+  semi_join(edx_train, by = "movieId") %>%
+  semi_join(edx_train, by = "userId")
+removed <-anti_join(edx_temp, edx_test)
+edx_train <-rbind(edx_train, removed)
+rm(edx_temp, test_index, removed)
+```
+Analyzing the data
+```{r}
+edx %>% as_tibble()
+
+#Confirm the dimensions and explore the features and classes of edx.
+glimpse(edx)
+
+#Determine the unique number of userIds, movieIds, and genres
+
+edx %>% summarize(unique_users = length(unique(userId)),
+                  unique_movies = length(unique(movieId)),
+                  unique_genres = length(unique(genres)))
+
+```
+
+```{r}
+#Ratings
+length(unique(edx$rating))
+```
+
+```{r}
+unique_ratings <-unique(edx$rating)
+sort(unique_ratings)
+```
+
+```{r}
+#View a Tibble of the Ratings Distribution
+edx %>% group_by(rating) %>% summarize(ratings_sum = n()) %>%
+  arrange(desc(ratings_sum))
+```
+
+```{r}
+rp <-edx %>% filter(edx$rating >=3)
+nrow(rp)/length(edx$rating)
+```
+TIMESTAMP
+```{r}
+#Transform the timestamp column of the edx dataset to a 'RatingYear' format
+edx <- edx %>% mutate(timestamp = as.POSIXct(timestamp, origin = "1970-01-01", 
+                                             tz = "EST"))
+edx$timestamp <- format(edx$timestamp, "%Y")
+names(edx)[names(edx) == "timestamp"] <- "RatingYear"
+head(edx)
+```
+
+```{r}
+validation <- validation %>% mutate(timestamp = as.POSIXct(timestamp, origin = "1970-01-01", 
+                                                           tz = "EST"))
+validation$timestamp <- format(validation$timestamp, "%Y")
+names(validation)[names(validation) == "timestamp"] <- "RatingYear"
+head(validation)
+
+```
+
+```{r}
+edx_train <- edx_train %>% mutate(timestamp = as.POSIXct(timestamp, origin = "1970-01-01", 
+                                                         tz = "EST"))
+edx_train$timestamp <- format(edx_train$timestamp, "%Y")
+names(edx_train)[names(edx_train) == "timestamp"] <- "RatingYear"
+head(edx_train)
+```
+
+```{r}
+edx_test <-edx_test %>% mutate(timestamp = as.POSIXct(timestamp, origin = "1970-01-01", 
+                                                      tz = "EST"))
+edx_test$timestamp <- format(edx_test$timestamp, "%Y")
+names(edx_test)[names(edx_test) == "timestamp"] <- "RatingYear"
+head(edx_test)
+```
+
+```{r}
+range(edx$RatingYear)
+```
+
+```{r}
+#Convert the 'RatingYear' column from character to numeric data type in order to plot a histogram
+edx$RatingYear <-as.numeric(edx$RatingYear)
+str(edx)
+```
+
+```{r}
+edx %>% group_by(RatingYear, title) %>% 
+  summarize(Ratings_Sum = n(), Average_Rating = mean(rating)) %>%
+  mutate(Average_Rating = sprintf("%0.2f", Average_Rating)) %>%
+  arrange(-Ratings_Sum) %>% print(n = 50)
+```
+
+```{r}
+edx_genres <-edx %>% separate_rows(genres, sep = "\\|")
+```
+
+Sum of Movie Ratings per Genre
+
+```{r}
+edx_genres %>%
+  group_by(genres) %>% summarize(Ratings_Sum = n(), Average_Rating = mean(rating)) %>%
+    arrange(-Ratings_Sum)
+```
+
+```{r}
+library(treemap)
+
+# sum of  ratings by genre
+genre_ratings <- aggregate(rating ~ genres, edx, sum)
+# construct treemap
+treemap(genre_ratings, index = "genres", vSize = "rating",
+        type = "value", palette = "Set3",
+        title = "Genre Ratings")
+```
+
+```{r}
+#Arrange the Genres by Mean Rating
+edx_genres %>%
+  group_by(genres) %>% summarize(Ratings_Sum = n(), Average_Rating = mean(rating)) %>%
+  arrange(-Average_Rating)
+```
+
+```{r}
+#Coerce the 'genres' column from character data type to factor data type
+edx$genres <-as.factor(edx$genres)
+edx_genres$genres <-as.factor(edx_genres$genres)
+class(edx_genres$genres)
+```
+
+```{r}
+library(ggplot2)
+
+# Aggregate of ratings per genre
+genre_ratings <- edx %>%
+  separate_rows(genres, sep = "\\|") %>%
+  group_by(genres) %>%
+  summarize(total_ratings = sum(rating))
+
+ggplot(genre_ratings, aes(x = reorder(genres, -total_ratings), y = total_ratings, fill = genres)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Sum of Movie Ratings per Genre") +
+  xlab("Genre") +
+  ylab("Total Ratings") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Mean Rating per Genre
+
+```{r}
+library(ggplot2)
+
+mean_ratings <- edx %>%
+  separate_rows(genres, sep = "\\|") %>%
+  group_by(genres) %>%
+  summarize(mean_rating = mean(rating), .groups = 'drop')
+
+ggplot(mean_ratings, aes(x = reorder(genres, mean_rating), y = mean_rating, fill = genres)) +
+  geom_bar(stat = 'identity') +
+  coord_flip() +
+  ggtitle("Mean Rating per Genre") +
+  xlab("Genre") +
+  ylab("Mean Rating") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+```{r}
+yearreleaseda <-as.numeric(str_sub(edx$title, start = -5, end = -2))
+edx <- edx %>% mutate(yearReleased = yearreleaseda)
+head(edx)
+```
+
+```{r}
+#Do the same for the validation set
+yearreleasedb <-as.numeric(str_sub(validation$title, start = -5, end = -2))
+validation <- validation %>% mutate(yearReleased = yearreleasedb)
+head(validation)
+```
+
+```{r}
+#This is also applied to edx_train & edx_test for later modeling purposes
+yearreleasedc <-as.numeric(str_sub(edx_train$title, start = -5, end = -2))
+edx_train <- edx_train %>% mutate(yearReleased = yearreleasedc)
+head(edx_train)
+```
+
+```{r}
+yearreleasedd <-as.numeric(str_sub(edx_test$title, start = -5, end = -2))
+edx_test <- edx_test %>% mutate(yearReleased = yearreleasedd)
+head(edx_test)
+```
+
+Use the newly defined “yearReleased” column to add a “MovieAge” column
+
+```{r}
+edx <-edx %>% mutate(MovieAge = 2020 - yearReleased)
+validation <-validation %>% mutate(MovieAge = 2020 - yearReleased)
+edx_train <-edx_train %>% mutate(MovieAge = 2020 - yearReleased)
+edx_test <-edx_test %>% mutate(MovieAge = 2020 - yearReleased)
+```
+
+Movie Age
+
+```{r}
+summary(edx$MovieAge)
+```
+Modeling
+The formula for RMSE can be defined as follows with y¯¯¯u,i the prediction of movie i by user u, and yu,the rating of movie i, by user u. N is then defined as the number of user/movie combinations and the sum of these different combinations.
+
+```{r}
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+
+```
+
+Begin Modeling: Benchmarking Model
+
+```{r}
+edx_train_mu <-mean(edx_train$rating)
+NRMSE_M1 <- RMSE(edx_test$rating, edx_train_mu)
+#Table the Results
+results_table <-tibble(Model_Type = "NRMSE", RMSE = NRMSE_M1) %>% 
+                  mutate(RMSE = sprintf("%0.4f", RMSE))
+results_table
+```
+Median Table 
+
+```{r}
+edx_train_median <-median(edx_train$rating)
+MM_M2 <-RMSE(edx_test$rating, edx_train_median)
+#Table the Results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model"),
+                       RMSE = c(NRMSE_M1, MM_M2)) %>% 
+                        mutate(RMSE = sprintf("%0.4f", RMSE))
+results_table
+```
+Movie Effects Model
+
+```{r}
+bi <- edx_train %>% group_by(movieId) %>%
+  summarize(b_i = mean(rating - edx_train_mu))
+```
+
+create the prediction 
+```{r}
+prediction_bi <-edx_train_mu + edx_test %>%
+  left_join(bi, by = "movieId") %>% .$b_i
+MEM_M3 <-RMSE(edx_test$rating, prediction_bi)
+#Table the Results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model", "Movie Effects"),
+                       RMSE = c(NRMSE_M1, MM_M2, MEM_M3)) %>% 
+                        mutate(RMSE = sprintf("%0.4f", RMSE))
+results_table
+
+```
+
+Adding User Effects to the Movie Effects Model:
+```{r}
+bu <-edx_train %>% left_join(bi, by = "movieId") %>% group_by(userId) %>%
+  summarize(b_u = mean(rating - edx_train_mu - b_i))
+```
+
+Create the Prediction
+Then check the prediction against the test set to determine the RMSE and table the results.
+```{r}
+prediction_bu <-edx_test %>% left_join(bi, by = "movieId") %>%
+  left_join(bu, by = "userId") %>%
+  mutate(predictions = edx_train_mu + b_i + b_u) %>% .$predictions
+UEM_M4 <-RMSE(edx_test$rating, prediction_bu)
+#Table the Results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model", "Movie Effects", "Movie & User Effects"),
+                       RMSE = c(NRMSE_M1, MM_M2, MEM_M3, UEM_M4)) %>% 
+                        mutate(RMSE = sprintf("%0.4f", RMSE))
+results_table
+```
+
+Adding Movie Age Effects:
+(Movie, User & Movie Age Effects Model)
+```{r}
+ba <- edx_train %>%
+  left_join(bi, by="movieId") %>% left_join(bu, by ="userId") %>%
+  group_by(MovieAge) %>% summarize(b_a = mean(rating - b_i - b_u - edx_train_mu))
+```
+
+Create the Prediction
+Check the prediction against the test set to determine the RMSE and table the results.
+
+```{r}
+predictions_ma <- edx_test %>% 
+  left_join(bi, by = "movieId") %>% left_join(bu, by = "userId") %>%
+  left_join(ba, by = "MovieAge") %>%  mutate(predictions = edx_train_mu + b_i + b_u + b_a) %>% 
+  .$predictions
+UMMAE_M5 <-RMSE(edx_test$rating, predictions_ma)
+#Table the results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model", "Movie Effects", 
+                                      "Movie & User Effects",
+                                      "User, Movie & Movie Age Effects"),
+                       RMSE = c(NRMSE_M1, MM_M2, MEM_M3, UEM_M4, UMMAE_M5)) %>% 
+                        mutate(RMSE = sprintf("%0.4f", RMSE))
+results_table
+```
+Movie & User Effects Model with Regularization:
+```{r}
+lambdasR <-seq(0, 10, 1)
+RMSES <- sapply(lambdasR, function(l){
+  edx_train_mu <- mean(edx_train$rating)
+  
+  b_i <- edx_train %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - edx_train_mu)/(n() + l))
+  
+  b_u <- edx_train %>%
+    left_join(b_i, by='movieId') %>% 
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - edx_train_mu)/(n() +l))
+  
+  predicted_ratings <- edx_test %>%
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = edx_train_mu + b_i +  b_u) %>% .$pred
+  
+return(RMSE(predicted_ratings, edx_test$rating))
+})
+#Determine which lambda minimizes the RMSE
+lambda <- lambdasR[which.min(RMSES)]
+lambda
+```
+
+```{r}
+library(ggplot2)
+
+# Create a data frame with lambdasR and RMSES
+data <- data.frame(lambdasR = lambdasR, RMSES = RMSES)
+
+# Create the scatter plot
+ggplot(data, aes(x = lambdasR, y = RMSES)) +
+  geom_point(color = "purple", alpha = 0.3) +
+  ggtitle("RMSE vs. Lambda") +
+  xlab("Lambda") + ylab("RMSE")
+
+```
+
+Building the Movie & User Effects Model with Regularization
+```{r}
+b_i <- edx_train %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - edx_train_mu)/(n()+lambda))
+b_u <-edx_train %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - edx_train_mu)/(n()+lambda))
+reg_prediction <- edx_test %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(predictions = edx_train_mu + b_i + b_u) %>% .$predictions
+
+UMEM_REG_M6 <-RMSE(edx_test$rating, reg_prediction)
+#Table the Results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model", "Movie Effects", 
+                                      "Movie & User Effects",
+                                      "Movie, User & Movie Age Effects",
+                                      "Movie & User Effects w/Regularization"),
+                       RMSE = c(NRMSE_M1, MM_M2, MEM_M3, UEM_M4, 
+                                UMMAE_M5, UMEM_REG_M6)) %>% 
+                        mutate(RMSE = sprintf("%0.6f", RMSE))
+results_table
+```
+Movie, User & Movie Age Effects Model with Regularization:
+```{r}
+lambdasM <-seq(0, 10, 1)
+RMSES2 <-sapply(lambdasM, function(l){
+  edx_train_mu <-mean(edx_train$rating)
+  
+  b_i <-edx_train %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - edx_train_mu)/(n() + l))
+  
+  b_u <-edx_train %>%
+    left_join(b_i, by='movieId') %>% 
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - edx_train_mu)/(n() +l))
+  
+  b_a <-edx_train %>% 
+    left_join(b_i, by = "movieId") %>% left_join(b_u, by = "userId") %>%
+    group_by(MovieAge) %>%
+    summarize(b_a = sum(rating - b_i - b_u - edx_train_mu)/(n()+l))
+  
+  predicted_ratings <-edx_test %>%
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_a, by = "MovieAge") %>%
+    mutate(predictions = edx_train_mu + b_i + b_u + b_a) %>% .$predictions
+  
+  return(RMSE(predicted_ratings, edx_test$rating))
+})
+lambda2 <- lambdasM[which.min(RMSES2)]
+lambda2
+
+```
+
+```{r}
+library(ggplot2)
+
+# Create a data frame with lambdasM and RMSES2
+df <- data.frame(lambda = lambdasM, RMSE = RMSES2)
+
+# Create a scatterplot of RMSEs vs lambdasM
+ggplot(df, aes(x = lambda, y = RMSE)) +
+  geom_point() +
+  geom_vline(xintercept = lambda2, linetype = "dashed") +
+  ggtitle("RMSE vs lambda") +
+  xlab("Lambda") + ylab("RMSE")
+
+```
+Building the User, Movie & Movie Age Effects Model with Regularization
+```{r}
+b_i <- edx_train %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - edx_train_mu)/(n()+lambda2))
+b_u <-edx_train %>% 
+  left_join(b_i, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - edx_train_mu)/(n()+lambda2))
+b_a <-edx_train %>% 
+  left_join(b_i, by = "movieId") %>% left_join(b_u, by = "userId") %>%
+  group_by(MovieAge) %>%
+  summarize(b_a = sum(rating - b_i - b_u - edx_train_mu)/(n()+lambda2))
+reg_prediction2 <- edx_test %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_a, by = "MovieAge") %>%
+  mutate(pred = edx_train_mu + b_i + b_u + b_a) %>%
+  pull(pred)
+UMMAE_REG_M7 <-RMSE(edx_test$rating, reg_prediction2)
+#Table the Results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model", "Movie Effects", 
+                                      "Movie & User Effects",
+                                      "User, Movie & Movie Age Effects",
+                                      "Movie & User Effects w/Regularization",
+                                      "User, Movie & Movie Age Effects w/Regularization"),
+                       RMSE = c(NRMSE_M1, MM_M2, MEM_M3, UEM_M4, 
+                                UMMAE_M5, UMEM_REG_M6, UMMAE_REG_M7)) %>% 
+                        mutate(RMSE = sprintf("%0.5f", RMSE))
+results_table
+```
+Using Validation:
+Now we will move on to using the edx & validation sets to confirm our Final Model achieves an RMSE less than .8649.
+
+The Benchmarking Model with Validation:
+```{r}
+edx_mu <-mean(edx$rating)
+FRMSE_M1 <-RMSE(validation$rating, edx_mu)
+#Table the Results
+results_table <-tibble(Model_Type = ("NRMSE"),
+                       Final_RMSE_Validation = (NRMSE_M1)) %>%
+                      mutate(Final_RMSE_Validation = sprintf("%0.5f", Final_RMSE_Validation))
+results_table
+```
+Median Model with validation:
+```{r}
+edx_med <-median(edx$rating)
+FRMSE_M2 <-RMSE(validation$rating, edx_med)
+#Table the Results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model"),
+                       Final_RMSE_Validation = c(FRMSE_M1, FRMSE_M2)) %>% 
+  mutate(Final_RMSE_Validation = sprintf("%0.5f", Final_RMSE_Validation))
+results_table
+```
+
+```{r}
+bi <- edx %>% group_by(movieId) %>%
+  summarize(b_i = mean(rating - edx_mu))
+#Prediction
+prediction_bi <-edx_mu + validation %>% 
+  left_join(bi, by = "movieId") %>% .$b_i
+FRMSE_M3 <-RMSE(validation$rating, prediction_bi)
+#Table the Results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model", "Movie Effects"),
+                       Final_RMSE_Validation = c(FRMSE_M1, FRMSE_M2, FRMSE_M3)) %>% 
+  mutate(Final_RMSE_Validation = sprintf("%0.5f", Final_RMSE_Validation))
+results_table
+```
+Movie & User Effects Model with Validation
+```{r}
+bu <-edx %>% left_join(bi, by = "movieId") %>% group_by(userId) %>%
+  summarize(b_u = mean(rating - edx_mu - b_i))
+#Prediction
+prediction_bu <-validation %>% left_join(bi, by = "movieId") %>%
+  left_join(bu, by = "userId") %>%
+  mutate(predictions = edx_mu + b_i + b_u) %>% .$predictions
+FRMSE_M4 <-RMSE(validation$rating, prediction_bu)
+#Table the Results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model", "Movie Effects",
+                                      "Movie & User Effects"),
+                       Final_RMSE_Validation = c(FRMSE_M1, FRMSE_M2, FRMSE_M3,
+                                                 FRMSE_M4)) %>% 
+  mutate(Final_RMSE_Validation = sprintf("%0.5f", Final_RMSE_Validation))
+results_table
+```
+
+Movie, User & Movie Age Effects with Validation:
+```{r}
+ba <- edx %>%
+  left_join(bi, by = "movieId") %>% left_join(bu, by = "userId") %>%
+  group_by(MovieAge) %>% summarize(b_a = mean(rating - b_i - b_u - edx_mu))
+#Prediction
+predictions_ma <- validation %>% 
+  left_join(bi, by = "movieId") %>% left_join(bu, by = "userId") %>%
+  left_join(ba, by = "MovieAge") %>%  mutate(predictions = edx_mu + b_i + b_u + b_a) %>% 
+  .$predictions
+FRMSE_M5 <-RMSE(validation$rating, predictions_ma)
+#Table the Results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model", "Movie Effects",
+                                      "Movie & User Effects",
+                                      "Movie, User, & Movie Age Effects"),
+                       Final_RMSE_Validation = c(FRMSE_M1, FRMSE_M2, FRMSE_M3,
+                                                 FRMSE_M4, FRMSE_M5)) %>% 
+  mutate(Final_RMSE_Validation = sprintf("%0.5f", Final_RMSE_Validation))
+results_table
+```
+Movie & User Effects with Regularization (Validation):
+```{r}
+lambda
+#Movie & User Effects Model with Regularization using the validation set
+
+b_i <-edx %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - edx_mu)/(n()+lambda))
+b_u <-edx %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - edx_mu)/(n()+lambda))
+reg_prediction <-validation %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(predictions = edx_mu + b_i + b_u) %>% .$predictions
+
+FRMSE_M6 <-RMSE(validation$rating, reg_prediction)
+#Table the Results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model", "Movie Effects",
+                                      "Movie & User Effects",
+                                      "Movie, User, & Movie Age Effects",
+                                      "Movie & User Effects w/Regularization"),
+                       Final_RMSE_Validation = c(FRMSE_M1, FRMSE_M2, FRMSE_M3,
+                                                 FRMSE_M4, FRMSE_M5,
+                                                 FRMSE_M6)) %>% 
+                        mutate(Final_RMSE_Validation = sprintf("%0.5f", 
+                                               Final_RMSE_Validation))
+results_table
+```
+
+Final Model with Validation:
+This Model features Movie, User, & Movie Age Effects with Regularization
+
+```{r}
+lambda2
+
+b_i <- edx %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - edx_mu)/(n()+lambda2))
+b_u <-edx %>% 
+  left_join(b_i, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - edx_mu)/(n()+lambda2))
+b_a <-edx %>% 
+  left_join(b_i, by="movieId") %>% left_join(b_u, by= "userId") %>%
+  group_by(MovieAge) %>%
+  summarize(b_a = sum(rating - b_i - b_u - edx_mu)/(n()+lambda2))
+reg_prediction2 <-validation %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_a, by = "MovieAge") %>%
+  mutate(predictions = edx_mu + b_i + b_u + b_a) %>% .$predictions
+
+FRMSE_M7 <-RMSE(validation$rating, reg_prediction2)
+#Table the Results
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model", "Movie Effects",
+                                      "Movie & User Effects",
+                                      "Movie, User, & Movie Age Effects",
+                                      "Movie & User Effects w/Regularization",
+                                      "Movie, User & Movie Age Effects w/Regularization"),
+                       Final_RMSE_Validation = c(FRMSE_M1, FRMSE_M2, FRMSE_M3,
+                                                 FRMSE_M4, FRMSE_M5,
+                                                 FRMSE_M6, FRMSE_M7)) %>% 
+  mutate(Final_RMSE_Validation = sprintf("%0.5f", 
+                                         Final_RMSE_Validation))
+results_table
+#Building the User, Movie & Movie Age Effects Model with Regularization
+
+```
+
+Table the training & test set results against those of the validation set
+```{r}
+results_table <-tibble(Model_Type = c("NRMSE", "Median_Model", "Movie Effects", 
+                                      "Movie & User Effects",
+                                      "Movie, User & Movie Age Effects",
+                                      "Movie & User Effects w/Regularization",
+                                      "User, Movie & Movie Age Effects w/Regularization"),
+                       RMSE = c(NRMSE_M1, MM_M2, MEM_M3, UEM_M4, 
+                                UMMAE_M5, UMEM_REG_M6, UMMAE_REG_M7),
+                       Final_RMSE_Validation = c(FRMSE_M1, FRMSE_M2, 
+                                                 FRMSE_M3, FRMSE_M4,
+                                                 FRMSE_M5, FRMSE_M6,
+                                                 FRMSE_M7)) %>%
+  mutate(Final_RMSE_Validation = sprintf("%0.5f", 
+                                         Final_RMSE_Validation)) %>%
+  mutate(RMSE = sprintf("%0.5f", RMSE))
+                       
+                       
+results_table
+```
+
+```{r}
+#The kable function in knitr table of the final results
+results_table %>% knitr::kable()
+```
+
+```{r}
+# Create a data frame with the given data
+model_data <- data.frame(
+  Model_Type = c("NRMSE", "Median_Model", "Movie Effects", "Movie & User Effects",
+                 "Movie, User & Movie Age Effects", "Movie & User Effects w/Regularization",
+                 "User, Movie & Movie Age Effects w/Regularization"),
+  RMSE = c(1.06005, 1.16676, 0.94296, 0.86468, 0.86433, 0.86414, 0.86384),
+  Final_RMSE_Validation = c(1.06120, 1.16802, 0.94391, 0.86535, 0.86500, 0.86482, 0.86452)
+)
+
+# Create a bar plot of RMSE
+barplot(
+  model_data$RMSE,
+  names.arg = model_data$Model_Type,
+  xlab = "Model Type",
+  ylab = "RMSE",
+  main = "RMSE by Model Type",
+  col = "blue"
+)
+
+# Create a bar plot of Final_RMSE_Validation
+barplot(
+  model_data$Final_RMSE_Validation,
+  names.arg = model_data$Model_Type,
+  xlab = "Model Type",
+  ylab = "Final RMSE Validation",
+  main = "Final RMSE Validation by Model Type",
+  col = "red"
+)
+
+
+
+```
+
+
+This Final Model achieves an RMSE of .86452
+The lowest RMSE using the validation set is the Final Validation Model featuring Regularized User, Movie & Movie Age Effects.
+
+
